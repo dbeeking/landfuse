@@ -1,0 +1,255 @@
+"""Train and run the Random Forest land-cover classifier."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import json
+import os
+
+import joblib
+import numpy as np
+import rasterio
+import sklearn
+from sklearn.ensemble import RandomForestClassifier
+
+from .contract import (
+    CLASSES,
+    LABEL_CLASSES,
+    MODEL_FEATURES,
+    SCHEMA,
+    LabeledScene,
+    LandFuseError,
+    Scene,
+    sha256,
+    write_json,
+)
+from .raster_ops import get_features, open_scene, windows
+
+
+@dataclass
+class Samples:
+    """Labeled training pixels with their map positions and source scene."""
+
+    features: np.ndarray
+    labels: np.ndarray
+    x: np.ndarray
+    y: np.ndarray
+    scene_index: np.ndarray
+    class_tiles: dict[str, int]
+    crs: list[str]
+    alignment: list[dict]
+
+
+def _assert_training_label_alignment(naip, labels):
+    if labels.count != 1 or labels.crs != naip.crs or labels.width != naip.width or labels.height != naip.height:
+        raise LandFuseError("Training labels must be single-band, same CRS and dimensions as NAIP")
+    if not labels.transform.almost_equals(naip.transform):
+        raise LandFuseError("Training labels must be exactly aligned with aerial imagery")
+
+
+def _split_limit(counts: list[int], limit: int) -> list[int]:
+    """Split a class sample limit across tiles, capped by what each tile holds."""
+    quotas = [0] * len(counts)
+    remaining = limit
+    open_tiles = [i for i, count in enumerate(counts) if count]
+    while remaining and open_tiles:
+        share = max(remaining // len(open_tiles), 1)
+        still_open = []
+        for i in open_tiles:
+            take = min(share, counts[i] - quotas[i], remaining)
+            quotas[i] += take
+            remaining -= take
+            if quotas[i] < counts[i]:
+                still_open.append(i)
+        open_tiles = still_open
+    return quotas
+
+
+def collect_samples(scenes: list[LabeledScene], *, seed: int = 42, per_class_limit: int = 20000,
+                    tile: int = 512) -> Samples:
+    """Sample each class evenly across every tile of every scene that contains it."""
+    if per_class_limit < 20 or per_class_limit > 100000:
+        raise LandFuseError("per_class_limit must be between 20 and 100000")
+    if not scenes:
+        raise LandFuseError("At least one labeled scene is required")
+    if len({item.scene.terrain_mode for item in scenes}) != 1:
+        raise LandFuseError("All scenes must use the same terrain mode")
+    rng = np.random.default_rng(seed)
+
+    tiles = []
+    tile_counts = {code: [] for code in LABEL_CLASSES}
+    crs = []
+    alignment = []
+    for index, item in enumerate(scenes):
+        with open_scene(item.scene) as (naip, _, metadata), rasterio.open(item.labels) as labels:
+            _assert_training_label_alignment(naip, labels)
+            crs.append(naip.crs.to_string())
+            alignment.append(metadata)
+            for window in windows(naip, tile):
+                values = labels.read(1, window=window)
+                tiles.append((index, window))
+                for code in LABEL_CLASSES:
+                    tile_counts[code].append(int(np.count_nonzero(values == code)))
+
+    # Random order keeps the remainder of each class limit from favoring one area.
+    order = rng.permutation(len(tiles))
+    tiles = [tiles[i] for i in order]
+    quotas = {code: _split_limit([tile_counts[code][i] for i in order], per_class_limit)
+              for code in LABEL_CLASSES}
+
+    features, targets, xs, ys, sources = [], [], [], [], []
+    class_tiles = {}
+    for index, item in enumerate(scenes):
+        with open_scene(item.scene) as (naip, terrain, _), rasterio.open(item.labels) as labels:
+            for position, (tile_scene, window) in enumerate(tiles):
+                if tile_scene != index or not any(quotas[code][position] for code in LABEL_CLASSES):
+                    continue
+                cube, good = get_features(naip, terrain, item.scene.terrain_mode, window)
+                values = labels.read(1, window=window)
+                transform = naip.window_transform(window)
+                flat = cube.reshape(-1, cube.shape[-1])
+                for code in LABEL_CLASSES:
+                    ids = np.flatnonzero((values == code) & good)
+                    take = min(quotas[code][position], ids.size)
+                    if not take:
+                        continue
+                    chosen = rng.choice(ids, size=take, replace=False)
+                    rows, cols = np.unravel_index(chosen, values.shape)
+                    map_x = transform.c + (cols + 0.5) * transform.a + (rows + 0.5) * transform.b
+                    map_y = transform.f + (cols + 0.5) * transform.d + (rows + 0.5) * transform.e
+                    features.append(flat[chosen])
+                    targets.append(np.full(take, code, dtype="uint8"))
+                    xs.append(np.asarray(map_x, dtype="float64"))
+                    ys.append(np.asarray(map_y, dtype="float64"))
+                    sources.append(np.full(take, index, dtype="int32"))
+                    class_tiles[CLASSES[code]] = class_tiles.get(CLASSES[code], 0) + 1
+    if len(class_tiles) < 2:
+        raise LandFuseError("At least two distinct labeled classes with valid imagery/terrain are needed")
+    return Samples(np.vstack(features), np.concatenate(targets), np.concatenate(xs), np.concatenate(ys),
+                   np.concatenate(sources), class_tiles, crs, alignment)
+
+
+def fit_forest(features: np.ndarray, labels: np.ndarray, *, seed: int = 42, trees: int = 80):
+    forest = RandomForestClassifier(n_estimators=trees, min_samples_leaf=3, max_features="sqrt",
+                                    class_weight="balanced_subsample", random_state=seed, n_jobs=2)
+    return forest.fit(features, labels)
+
+
+def train_scenes(scenes: list[LabeledScene], output_model: Path, *, seed: int = 42,
+                 per_class_limit: int = 20000, tile: int = 512, trees: int = 80) -> dict:
+    """Train one model from one or more labeled scenes."""
+    if output_model.exists():
+        raise LandFuseError("Refusing to overwrite an existing model file")
+    samples = collect_samples(scenes, seed=seed, per_class_limit=per_class_limit, tile=tile)
+    forest = fit_forest(samples.features, samples.labels, seed=seed, trees=trees)
+    terrain_mode = scenes[0].scene.terrain_mode
+    output_model.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump({"model": forest, "terrain_mode": terrain_mode, "schema": SCHEMA,
+                 "features": MODEL_FEATURES}, output_model, compress=3)
+    codes, counts = np.unique(samples.labels, return_counts=True)
+    scene_records = []
+    for index, item in enumerate(scenes):
+        in_scene = samples.scene_index == index
+        scene_records.append({
+            "id": item.scene_id,
+            "group": item.group,
+            "imagery_sha256": sha256(item.scene.imagery),
+            "terrain_sha256": sha256(item.scene.terrain),
+            "label_sha256": sha256(item.labels),
+            "samples": int(np.count_nonzero(in_scene)),
+            "source_alignment": samples.alignment[index],
+        })
+    manifest = {
+        "schema": SCHEMA,
+        "trained_with": "user_supplied_labels",
+        "validated_accuracy": None,
+        "note": "Training fit is not accuracy. Run cross-validate with spatially separate scenes or blocks",
+        "train_class_counts": {CLASSES[int(code)]: int(count) for code, count in zip(codes, counts)},
+        "train_class_tiles": samples.class_tiles,
+        "feature_names": MODEL_FEATURES,
+        "terrain_mode": terrain_mode,
+        "scenes": scene_records,
+        "model_sha256": sha256(output_model),
+        "sklearn_version": sklearn.__version__,
+        "classes": CLASSES,
+    }
+    write_json(str(output_model) + ".json", manifest)
+    return manifest
+
+
+def train(scene: Scene, labels_path: Path, output_model: Path, *, seed: int = 42,
+          per_class_limit: int = 20000, tile: int = 512, trees: int = 80) -> dict:
+    """Train a model from a single labeled scene."""
+    item = LabeledScene(scene, labels_path, "scene", "scene")
+    return train_scenes([item], output_model, seed=seed, per_class_limit=per_class_limit,
+                        tile=tile, trees=trees)
+
+
+def infer(scene: Scene, model_path: Path, output_path: Path, *, tile: int = 512,
+          trust_local_model: bool = False) -> dict:
+    if not trust_local_model:
+        raise LandFuseError("Models use Python serialization: load only trusted local models, with --trust-local-model")
+    manifest_path = Path(str(model_path) + ".json")
+    if not manifest_path.is_file():
+        raise LandFuseError("Model sidecar manifest is missing")
+    meta = json.loads(manifest_path.read_text())
+    if meta.get("model_sha256") != sha256(model_path):
+        raise LandFuseError("Model integrity check failed: SHA256 mismatch")
+    if meta.get("terrain_mode") != scene.terrain_mode or meta.get("schema") != SCHEMA:
+        raise LandFuseError("Model terrain mode or schema incompatible with scene")
+    trained_with = meta.get("sklearn_version")
+    if trained_with and trained_with != sklearn.__version__:
+        raise LandFuseError(f"Model was trained with scikit-learn {trained_with}, but {sklearn.__version__} is installed")
+    bundle = joblib.load(model_path)
+    if bundle.get("features") != MODEL_FEATURES or bundle.get("schema") != SCHEMA:
+        raise LandFuseError("Serialized model feature/schema contract mismatch")
+    if output_path.exists():
+        raise LandFuseError("Refusing to overwrite an existing classification")
+    class_pixels = np.zeros(len(CLASSES), dtype="int64")
+    with open_scene(scene) as (naip, terrain, source):
+        profile = naip.profile.copy()
+        profile.update(driver="GTiff", height=naip.height, width=naip.width, count=1,
+                       dtype="uint8", nodata=0, compress="deflate", predictor=2,
+                       tiled=True, blockxsize=256, blockysize=256, interleave="band")
+        pixel_area = float(abs(naip.res[0] * naip.res[1]))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        partial = output_path.with_name(output_path.name + ".partial")
+        try:
+            with rasterio.open(partial, "w", **profile) as dst:
+                dst.update_tags(LANDFUSE_SCHEMA=SCHEMA, LANDFUSE_CLASS_NAMES=json.dumps(CLASSES),
+                                LANDFUSE_MODE=scene.terrain_mode, LANDFUSE_QUALITY="UNVALIDATED")
+                for window in windows(naip, tile):
+                    cube, valid = get_features(naip, terrain, scene.terrain_mode, window)
+                    result = np.zeros(valid.shape, dtype="uint8")
+                    if np.any(valid):
+                        result[valid] = bundle["model"].predict(cube[valid]).astype("uint8")
+                    dst.write(result, 1, window=window)
+                    class_pixels += np.bincount(result.ravel(), minlength=len(CLASSES))[:len(CLASSES)]
+            os.replace(partial, output_path)
+        except BaseException:
+            partial.unlink(missing_ok=True)
+            raise
+    total = int(class_pixels.sum())
+    classified = total - int(class_pixels[0])
+    summary = {
+        "schema": SCHEMA,
+        "imagery_sha256": sha256(scene.imagery),
+        "terrain_sha256": sha256(scene.terrain),
+        "model_sha256": sha256(model_path),
+        "classified_raster_sha256": sha256(output_path),
+        "terrain_mode": scene.terrain_mode,
+        "classes": CLASSES,
+        "source_alignment": source,
+        "coverage": {
+            "total_pixels": total,
+            "classified_pixels": classified,
+            "nodata_pixels": int(class_pixels[0]),
+            "coverage_fraction": classified / total if total else 0.0,
+            "class_pixels": {CLASSES[code]: int(class_pixels[code]) for code in LABEL_CLASSES},
+            "class_area_m2": {CLASSES[code]: float(class_pixels[code] * pixel_area) for code in LABEL_CLASSES},
+        },
+        "validation": "NOT_INDEPENDENTLY_VALIDATED",
+        "warning": "Not a survey, flood assessment, or verified building-footprint map",
+    }
+    write_json(str(output_path) + ".json", summary)
+    return summary

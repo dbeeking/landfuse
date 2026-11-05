@@ -1,0 +1,24 @@
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.env*
+*.joblib
+*.las
+*.laz
+*.tif
+*.tiff
+*.jp2
+*.gpkg
+*.parquet
+*.pem
+*.key
+secrets/
+raw_data/
+outputs/
+
+# macOS metadata
+.DS_Store
