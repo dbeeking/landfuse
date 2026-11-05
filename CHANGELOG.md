@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 — NAIP-only classification
+
+- Added imagery-only classification using raw 8-bit NAIP RGB or RGB-NIR GeoTIFFs.
+- DEM and LiDAR-derived CHM remain optional modes with compatible feature ordering.
+- Mode/band-specific model checks prevent incompatible model inference.
+- Updated scene lists, input inspection, training, spatial cross-validation, and sidecars.
+- Explicitly reports that imagery-only mode cannot measure vegetation heights.
+- Does not include a pretrained classifier or claim independently validated accuracy.
+
+
 ## 0.1.0
 
 ### Added

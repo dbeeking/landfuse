@@ -16,6 +16,7 @@ from .contract import (
     CLASSES,
     LABEL_CLASSES,
     MODEL_FEATURES,
+    feature_names,
     SCHEMA,
     LabeledScene,
     LandFuseError,
@@ -73,7 +74,7 @@ def collect_samples(scenes: list[LabeledScene], *, seed: int = 42, per_class_lim
     if not scenes:
         raise LandFuseError("At least one labeled scene is required")
     if len({item.scene.terrain_mode for item in scenes}) != 1:
-        raise LandFuseError("All scenes must use the same terrain mode")
+        raise LandFuseError("All training scenes must use the same input mode")
     rng = np.random.default_rng(seed)
 
     tiles = []
@@ -85,6 +86,8 @@ def collect_samples(scenes: list[LabeledScene], *, seed: int = 42, per_class_lim
             _assert_training_label_alignment(naip, labels)
             crs.append(naip.crs.to_string())
             alignment.append(metadata)
+            if len({m["imagery_bands"] for m in alignment}) != 1:
+                raise LandFuseError("All training scenes must have identical imagery band counts")
             for window in windows(naip, tile):
                 values = labels.read(1, window=window)
                 tiles.append((index, window))
@@ -124,7 +127,7 @@ def collect_samples(scenes: list[LabeledScene], *, seed: int = 42, per_class_lim
                     sources.append(np.full(take, index, dtype="int32"))
                     class_tiles[CLASSES[code]] = class_tiles.get(CLASSES[code], 0) + 1
     if len(class_tiles) < 2:
-        raise LandFuseError("At least two distinct labeled classes with valid imagery/terrain are needed")
+        raise LandFuseError("At least two distinct labeled classes with valid input pixels are needed")
     return Samples(np.vstack(features), np.concatenate(targets), np.concatenate(xs), np.concatenate(ys),
                    np.concatenate(sources), class_tiles, crs, alignment)
 
@@ -143,9 +146,13 @@ def train_scenes(scenes: list[LabeledScene], output_model: Path, *, seed: int = 
     samples = collect_samples(scenes, seed=seed, per_class_limit=per_class_limit, tile=tile)
     forest = fit_forest(samples.features, samples.labels, seed=seed, trees=trees)
     terrain_mode = scenes[0].scene.terrain_mode
+    bands = int(samples.alignment[0]["imagery_bands"])
+    names = feature_names(terrain_mode, bands)
+    if any(item["imagery_bands"] != bands for item in samples.alignment):
+        raise LandFuseError("Training scenes must use the same imagery band count")
     output_model.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump({"model": forest, "terrain_mode": terrain_mode, "schema": SCHEMA,
-                 "features": MODEL_FEATURES}, output_model, compress=3)
+                 "imagery_bands": bands, "features": names}, output_model, compress=3)
     codes, counts = np.unique(samples.labels, return_counts=True)
     scene_records = []
     for index, item in enumerate(scenes):
@@ -154,7 +161,7 @@ def train_scenes(scenes: list[LabeledScene], output_model: Path, *, seed: int = 
             "id": item.scene_id,
             "group": item.group,
             "imagery_sha256": sha256(item.scene.imagery),
-            "terrain_sha256": sha256(item.scene.terrain),
+            "terrain_sha256": sha256(item.scene.terrain) if item.scene.terrain else None,
             "label_sha256": sha256(item.labels),
             "samples": int(np.count_nonzero(in_scene)),
             "source_alignment": samples.alignment[index],
@@ -166,7 +173,8 @@ def train_scenes(scenes: list[LabeledScene], output_model: Path, *, seed: int = 
         "note": "Training fit is not accuracy. Run cross-validate with spatially separate scenes or blocks",
         "train_class_counts": {CLASSES[int(code)]: int(count) for code, count in zip(codes, counts)},
         "train_class_tiles": samples.class_tiles,
-        "feature_names": MODEL_FEATURES,
+        "feature_names": names,
+        "imagery_bands": bands,
         "terrain_mode": terrain_mode,
         "scenes": scene_records,
         "model_sha256": sha256(output_model),
@@ -200,8 +208,16 @@ def infer(scene: Scene, model_path: Path, output_path: Path, *, tile: int = 512,
     trained_with = meta.get("sklearn_version")
     if trained_with and trained_with != sklearn.__version__:
         raise LandFuseError(f"Model was trained with scikit-learn {trained_with}, but {sklearn.__version__} is installed")
+    # Verify the scene and feature contract BEFORE loading Python-serialized model data.
+    with open_scene(scene) as (_, _, source_checks):
+        bands = int(source_checks["imagery_bands"])
+        names = feature_names(scene.terrain_mode, bands)
+    if meta.get("feature_names") != names or meta.get("imagery_bands", 4) != bands:
+        raise LandFuseError("Model imagery bands or feature schema incompatible with scene")
     bundle = joblib.load(model_path)
-    if bundle.get("features") != MODEL_FEATURES or bundle.get("schema") != SCHEMA:
+    if (bundle.get("features") != names or bundle.get("schema") != SCHEMA
+            or bundle.get("terrain_mode") != scene.terrain_mode
+            or bundle.get("imagery_bands", 4) != bands):
         raise LandFuseError("Serialized model feature/schema contract mismatch")
     if output_path.exists():
         raise LandFuseError("Refusing to overwrite an existing classification")
@@ -234,10 +250,13 @@ def infer(scene: Scene, model_path: Path, output_path: Path, *, tile: int = 512,
     summary = {
         "schema": SCHEMA,
         "imagery_sha256": sha256(scene.imagery),
-        "terrain_sha256": sha256(scene.terrain),
+        "terrain_sha256": sha256(scene.terrain) if scene.terrain else None,
         "model_sha256": sha256(model_path),
         "classified_raster_sha256": sha256(output_path),
         "terrain_mode": scene.terrain_mode,
+        "imagery_bands": bands,
+        "feature_names": names,
+        "height_estimation_available": scene.terrain_mode == "chm",
         "classes": CLASSES,
         "source_alignment": source,
         "coverage": {
@@ -249,7 +268,10 @@ def infer(scene: Scene, model_path: Path, output_path: Path, *, tile: int = 512,
             "class_area_m2": {CLASSES[code]: float(class_pixels[code] * pixel_area) for code in LABEL_CLASSES},
         },
         "validation": "NOT_INDEPENDENTLY_VALIDATED",
-        "warning": "Not a survey, flood assessment, or verified building-footprint map",
+        "warning": ("Imagery-only classification does not measure canopy/object heights. "
+                    if scene.terrain_mode == "imagery" else
+                    "Bare-earth DEM does not measure canopy height. " if scene.terrain_mode == "dem" else "") +
+                   "Not a survey, flood assessment, or verified building-footprint map",
     }
     write_json(str(output_path) + ".json", summary)
     return summary

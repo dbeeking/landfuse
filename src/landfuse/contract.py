@@ -19,6 +19,23 @@ CLASSES = {
 LABEL_CLASSES = [code for code in CLASSES if code != 0]
 MODEL_FEATURES = ["red", "green", "blue", "nir", "ndvi", "ndwi", "brightness", "terrain"]
 SCHEMA = "landfuse.classification.v1"
+MODES = ("imagery", "dem", "chm")
+
+
+def feature_names(mode: str, bands: int) -> list[str]:
+    """Exact serialized model feature order; retain historical 4-band DEM/CHM layout."""
+    if mode not in MODES:
+        raise LandFuseError("Unsupported mode: expected imagery, dem or chm")
+    if bands not in (3, 4) or (mode != "imagery" and bands != 4):
+        raise LandFuseError("DEM/CHM require RGB-NIR; imagery-only supports RGB or RGB-NIR")
+    names = ["red", "green", "blue"]
+    if bands == 4:
+        names += ["nir", "ndvi", "ndwi"]
+    names += ["brightness"]
+    if mode != "imagery":
+        names += ["terrain"]
+    return names
+
 
 
 class LandFuseError(ValueError):
@@ -40,14 +57,18 @@ def write_json(path: str | Path, payload: dict) -> None:
 @dataclass(frozen=True)
 class Scene:
     imagery: Path
-    terrain: Path
-    terrain_mode: str
+    terrain: Path | None = None
+    terrain_mode: str = "imagery"
 
     def check(self) -> None:
-        if self.terrain_mode not in ("dem", "chm"):
-            raise LandFuseError("terrain mode must be 'dem' or 'chm' (LiDAR is prepared into CHM first)")
+        if self.terrain_mode not in MODES:
+            raise LandFuseError("terrain mode must be 'imagery', 'dem' or 'chm'")
+        if self.terrain_mode == "imagery" and self.terrain is not None:
+            raise LandFuseError("Imagery-only mode must not include a terrain raster")
+        if self.terrain_mode in ("dem", "chm") and self.terrain is None:
+            raise LandFuseError("DEM/CHM mode requires --terrain")
         for path in (self.imagery, self.terrain):
-            if not path.is_file():
+            if path is not None and not Path(path).is_file():
                 raise LandFuseError(f"Missing input file: {path}")
 
 
@@ -74,8 +95,8 @@ def load_scene_list(path: str | Path) -> list[LabeledScene]:
         raise LandFuseError("Scene list must be a JSON object with terrain_mode and scenes")
     mode = payload.get("terrain_mode")
     entries = payload.get("scenes")
-    if mode not in ("dem", "chm"):
-        raise LandFuseError("Scene list terrain_mode must be 'dem' or 'chm'")
+    if mode not in MODES:
+        raise LandFuseError("Scene list terrain_mode must be 'imagery', 'dem' or 'chm'")
     if not isinstance(entries, list) or not entries:
         raise LandFuseError("Scene list must contain at least one scene")
 
@@ -88,7 +109,10 @@ def load_scene_list(path: str | Path) -> list[LabeledScene]:
     for entry in entries:
         if not isinstance(entry, dict):
             raise LandFuseError("Each scene must be a JSON object")
-        missing = [key for key in ("id", "imagery", "terrain", "labels") if not entry.get(key)]
+        required = ("id", "imagery", "labels") if mode == "imagery" else ("id", "imagery", "terrain", "labels")
+        missing = [key for key in required if not entry.get(key)]
+        if mode == "imagery" and entry.get("terrain") is not None:
+            raise LandFuseError("Imagery-only scene must not specify terrain")
         if missing:
             raise LandFuseError(f"Scene is missing: {', '.join(missing)}")
         scene_id = str(entry["id"])
@@ -98,7 +122,7 @@ def load_scene_list(path: str | Path) -> list[LabeledScene]:
         labels = resolve(entry["labels"])
         if not labels.is_file():
             raise LandFuseError(f"Missing input file: {labels}")
-        scene = Scene(resolve(entry["imagery"]), resolve(entry["terrain"]), mode)
+        scene = Scene(resolve(entry["imagery"]), resolve(entry["terrain"]) if mode != "imagery" else None, mode)
         scene.check()
         scenes.append(LabeledScene(scene, labels, scene_id, str(entry.get("group") or scene_id)))
     return scenes
