@@ -1,6 +1,6 @@
 # LandFuse
 
-LandFuse classifies land cover by combining four-band aerial imagery with either a bare-earth DEM or a LiDAR-derived canopy height model. It writes a georeferenced classified GeoTIFF and a JSON sidecar with input hashes and coverage. It runs as a standalone command-line tool.
+LandFuse classifies land cover from high-resolution aerial imagery alone (NAIP-only mode), or combines four-band aerial imagery with either a bare-earth DEM or a LiDAR-derived canopy height model. It writes a georeferenced classified GeoTIFF and a JSON sidecar with input hashes and coverage. It runs as a standalone command-line tool.
 
 
 ## Inputs
@@ -21,6 +21,30 @@ landfuse --help
 ```
 
 PDAL is a separate command-line dependency and is only needed for `prepare-lidar`. Pip doesn't install it.
+
+## NAIP-only classification (no DEM or LiDAR)
+
+**New in v0.2.0:** georeferenced raw 8-bit NAIP RGB or RGB-NIR GeoTIFFs work without terrain.
+Input classes remain `water`, `bare_ground`, `low_vegetation`, `tall_vegetation`,
+`built_surface`, `road_or_path`; code `0` is nodata/unclassified. The classifier
+uses only spectral features and **does not measure plant height**: distinguishing
+low from tall vegetation requires independently labeled training examples, and
+may be unreliable without LiDAR. A trained model is NOT included.
+
+```bash
+landfuse inspect --imagery /data/naip_4band.tif
+landfuse train --imagery /data/naip_4band.tif \
+  --labels /data/training_labels.tif --output-model /data/models/naip_only.joblib
+landfuse classify --imagery /data/naip_4band.tif \
+  --model /data/models/naip_only.joblib --trust-local-model \
+  --output /data/results/naip_landcover.tif
+```
+
+Train with independently prepared per-pixel labels (0 unlabeled, 1–6 class codes).
+For robust accuracy checks, create a scene list with `"terrain_mode":"imagery"`
+(no `terrain` keys) and run spatial `cross-validate`. A model trained for RGB cannot
+classify RGB-NIR imagery, and imagery-only models cannot be used in DEM/CHM mode.
+Inputs must be local georeferenced, north-up, metric CRS GeoTIFFs, not map tile PNGs.
 
 ## Workflows
 

@@ -17,9 +17,10 @@ from .raster_ops import open_scene
 
 
 def add_scene(command, *, required=True):
-    command.add_argument("--imagery", type=Path, required=required, help="Local 4-band RGB-NIR GeoTIFF")
-    command.add_argument("--terrain", type=Path, required=required, help="Local bare-earth DEM or LiDAR-derived CHM GeoTIFF")
-    command.add_argument("--terrain-mode", choices=["dem", "chm"], required=required)
+    command.add_argument("--imagery", type=Path, required=required, help="Local 8-bit NAIP RGB or RGB-NIR GeoTIFF")
+    command.add_argument("--terrain", type=Path, help="Optional bare-earth DEM or LiDAR-derived CHM GeoTIFF")
+    command.add_argument("--terrain-mode", choices=["imagery", "dem", "chm"],
+                         default=None, help="Default: imagery (NAIP only, no terrain)")
 
 
 def add_training_options(command):
@@ -29,7 +30,7 @@ def add_training_options(command):
 
 
 def parser():
-    p = argparse.ArgumentParser(prog="landfuse", description="NAIP + terrain or LiDAR land-cover classification")
+    p = argparse.ArgumentParser(prog="landfuse", description="NAIP land-cover classification, optionally fused with DEM or LiDAR-derived CHM")
     p.add_argument("--version", action="version", version=f"landfuse {__version__}")
     commands = p.add_subparsers(dest="command", required=True)
 
@@ -84,9 +85,10 @@ def run_train(args):
         if any(value is not None for value in single):
             raise LandFuseError("Use --scenes or the single-scene options, not both")
         return train_scenes(load_scene_list(args.scenes), args.output_model, **options)
-    if any(value is None for value in single):
-        raise LandFuseError("Provide --scenes, or all of --imagery, --terrain, --terrain-mode, and --labels")
-    return train(Scene(args.imagery, args.terrain, args.terrain_mode), args.labels, args.output_model, **options)
+    if args.imagery is None or args.labels is None:
+        raise LandFuseError("Provide --scenes or --imagery and --labels")
+    return train(Scene(args.imagery, args.terrain, args.terrain_mode or "imagery"),
+                 args.labels, args.output_model, **options)
 
 
 def run(args):
@@ -102,7 +104,7 @@ def run(args):
         return cross_validate(load_scene_list(args.scenes), args.output, by=args.by, folds=args.folds,
                               block_m=args.block_m, buffer_m=args.buffer_m, seed=args.seed,
                               per_class_limit=args.per_class_limit, trees=args.trees)
-    scene = Scene(args.imagery, args.terrain, args.terrain_mode)
+    scene = Scene(args.imagery, args.terrain, args.terrain_mode or "imagery")
     if args.command == "inspect":
         with open_scene(scene) as (_, _, metadata):
             return metadata
