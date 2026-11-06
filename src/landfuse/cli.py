@@ -14,6 +14,7 @@ from .lidar import pdal_canopy_height
 from .model import infer, train, train_scenes
 from .naip import fetch_naip
 from .raster_ops import open_scene
+from .schema import load_class_schema
 
 
 def add_scene(command, *, required=True):
@@ -43,9 +44,12 @@ def parser():
     x.add_argument("--scenes", type=Path, help="JSON scene list, used instead of the single-scene options")
     x.add_argument("--output-model", type=Path, required=True)
     add_training_options(x)
+    x.add_argument("--class-schema", default="v1",
+                   help="v1, v2, or a user-defined .json/.yaml/.yml taxonomy file")
 
     x = commands.add_parser("classify", help="Write georeferenced classified GeoTIFF")
     add_scene(x)
+    x.add_argument("--class-schema", help="Optional required taxonomy match; otherwise read pinned model schema")
     x.add_argument("--model", type=Path, required=True)
     x.add_argument("--output", type=Path, required=True)
     x.add_argument("--trust-local-model", action="store_true", help="Confirm user trusts this serialized Python model")
@@ -58,8 +62,14 @@ def parser():
     x.add_argument("--block-m", type=float, default=250.0, help="Block size in metres")
     x.add_argument("--buffer-m", type=float, default=30.0, help="Training exclusion distance around held-out blocks")
     add_training_options(x)
+    x.add_argument("--class-schema", default="v1",
+                   help="v1, v2, or a user-defined .json/.yaml/.yml taxonomy file")
+
+    x = commands.add_parser("schema", help="Validate and inspect a built-in or user-defined taxonomy")
+    x.add_argument("--class-schema", required=True)
 
     x = commands.add_parser("evaluate", help="Compare classified GeoTIFF with independent held-out reference labels")
+    x.add_argument("--class-schema", help="Required for an untagged independent reference under a custom taxonomy")
     x.add_argument("--prediction", type=Path, required=True)
     x.add_argument("--reference", type=Path, required=True)
     x.add_argument("--output", type=Path, required=True)
@@ -79,7 +89,8 @@ def parser():
 
 
 def run_train(args):
-    options = {"seed": args.seed, "trees": args.trees, "per_class_limit": args.per_class_limit}
+    options = {"seed": args.seed, "trees": args.trees, "per_class_limit": args.per_class_limit,
+               "class_schema": args.class_schema}
     single = [args.imagery, args.terrain, args.terrain_mode, args.labels]
     if args.scenes:
         if any(value is not None for value in single):
@@ -94,8 +105,10 @@ def run_train(args):
 def run(args):
     if args.command == "fetch-naip":
         return fetch_naip(args.output, tuple(args.bbox), args.epsg, resolution_m=args.resolution)
+    if args.command == "schema":
+        return load_class_schema(args.class_schema).as_dict()
     if args.command == "evaluate":
-        return evaluate(args.prediction, args.reference, args.output)
+        return evaluate(args.prediction, args.reference, args.output, class_schema=args.class_schema)
     if args.command == "prepare-lidar":
         return pdal_canopy_height(args.lidar, args.imagery, args.output, resolution_m=args.resolution)
     if args.command == "train":
@@ -103,12 +116,14 @@ def run(args):
     if args.command == "cross-validate":
         return cross_validate(load_scene_list(args.scenes), args.output, by=args.by, folds=args.folds,
                               block_m=args.block_m, buffer_m=args.buffer_m, seed=args.seed,
-                              per_class_limit=args.per_class_limit, trees=args.trees)
+                              per_class_limit=args.per_class_limit, trees=args.trees,
+                              class_schema=args.class_schema)
     scene = Scene(args.imagery, args.terrain, args.terrain_mode or "imagery")
     if args.command == "inspect":
         with open_scene(scene) as (_, _, metadata):
             return metadata
-    return infer(scene, args.model, args.output, trust_local_model=args.trust_local_model)
+    return infer(scene, args.model, args.output, trust_local_model=args.trust_local_model,
+                 class_schema=args.class_schema)
 
 
 def main(argv=None):

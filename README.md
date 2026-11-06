@@ -1,5 +1,7 @@
 # LandFuse
 
+**LandFuse v0.3.0:** User-configurable JSON/YAML classification schemas are supported; see [schema-driven classification](docs/SCHEMA_DRIVEN_V03.md). Existing six-class `v1` remains the default.
+
 LandFuse classifies land cover from high-resolution aerial imagery alone (NAIP-only mode), or combines four-band aerial imagery with either a bare-earth DEM or a LiDAR-derived canopy height model. It writes a georeferenced classified GeoTIFF and a JSON sidecar with input hashes and coverage. It runs as a standalone command-line tool.
 
 
