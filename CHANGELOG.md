@@ -6,7 +6,6 @@
 - Pin schema identity/hash in models and classified GeoTIFF metadata; reject schema mismatches.
 - Keep six-class `v1` as the default; retain the opt-in seven-class `v2` taxonomy.
 - Add schema inspection, custom taxonomy training/evaluation and regression tests.
-- This release does not include pretrained models, reclassified Yavapai labels, or PlaceRules deployment.
 
 
 ## 0.2.0 — NAIP-only classification
