@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 (candidate) — Configurable taxonomies
+
+- Accept user-defined JSON/YAML land-cover schemas, including custom class codes and metadata.
+- Pin schema identity/hash in models and classified GeoTIFF metadata; reject schema mismatches.
+- Keep six-class `v1` as the default; retain the opt-in seven-class `v2` taxonomy.
+- Add schema inspection, custom taxonomy training/evaluation and regression tests.
+
+
 ## 0.2.0 — NAIP-only classification
 
 - Added imagery-only classification using raw 8-bit NAIP RGB or RGB-NIR GeoTIFFs.

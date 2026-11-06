@@ -1,0 +1,13 @@
+{
+  "format": "landfuse.taxonomy.v1",
+  "id": "example.forestry",
+  "version": "1.0.0",
+  "description": "Illustrative taxonomy; independently reviewed reference labels and a trained model are required.",
+  "classes": [
+    {"code": 10, "name": "vegetation", "color": "#417e42"},
+    {"code": 20, "name": "conifer", "parent": "vegetation", "color": "#185b33"},
+    {"code": 30, "name": "deciduous", "parent": "vegetation", "color": "#93a63d"},
+    {"code": 40, "name": "shrubland", "parent": "vegetation", "color": "#b6ac62"},
+    {"code": 50, "name": "bare_ground", "color": "#a98866"}
+  ]
+}

@@ -16,6 +16,28 @@ CLASSES = {
     5: "built_surface",
     6: "road_or_path",
 }
+# Versioned taxonomies. Keep the v1 pixel codes immutable for legacy models.
+# Zero is nodata/unclassified, NOT a reliable "unknown" prediction.
+SCHEMA_V2 = "landfuse.classification.v2"
+CLASSES_V2 = {
+    0: "nodata",
+    1: "water",
+    2: "rock_bedrock",
+    3: "bare_earth",
+    4: "vegetation",
+    5: "structure",
+    6: "paved_surface",
+    7: "unpaved_road_track",
+}
+CLASS_SCHEMAS = {"v1": CLASSES, "v2": CLASSES_V2}
+SCHEMA_NAMES = {"v1": "landfuse.classification.v1", "v2": SCHEMA_V2}
+
+def resolve_class_schema(schema: str):
+    """Legacy public API: dynamically resolve any registered or file-backed taxonomy."""
+    from .schema import load_class_schema
+    item = load_class_schema(schema)
+    return item.identifier, item.classes
+
 LABEL_CLASSES = [code for code in CLASSES if code != 0]
 MODEL_FEATURES = ["red", "green", "blue", "nir", "ndvi", "ndwi", "brightness", "terrain"]
 SCHEMA = "landfuse.classification.v1"

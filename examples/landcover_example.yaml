@@ -1,0 +1,33 @@
+format: landfuse.taxonomy.v1
+id: example.landcover
+version: 1.0.0
+description: Visible surface cover only; drainage hazard is a separate analytic layer.
+classes:
+  - code: 1
+    name: water
+    color: '#357cc1'
+    description: Visibly wet water surfaces; dry drainage channels are not water.
+  - code: 2
+    name: rock
+    color: '#8d8a84'
+    description: Distinguishable exposed bedrock and rock outcrops.
+  - code: 3
+    name: bare_earth
+    color: '#c5a67b'
+    description: Soil, sand and gravel, including dry washes by visible surface material.
+  - code: 4
+    name: vegetation
+    color: '#39894a'
+    description: Trees, shrubs and grasses, without claiming canopy height.
+  - code: 5
+    name: structure
+    color: '#aa5171'
+    description: Identifiable roofs and built structures.
+  - code: 6
+    name: paved_surface
+    color: '#555c62'
+    description: Visible asphalt and concrete roads, driveways and parking.
+  - code: 7
+    name: unpaved_road_track
+    color: '#96704d'
+    description: Visible dirt roads, gravel roads and tracks.

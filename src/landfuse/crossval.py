@@ -5,9 +5,10 @@ from pathlib import Path
 
 import numpy as np
 
-from .contract import CLASSES, SCHEMA, LabeledScene, LandFuseError, sha256, write_json
+from .contract import CLASSES, SCHEMA, resolve_class_schema, LabeledScene, LandFuseError, sha256, write_json
 from .evaluate import class_metrics
 from .model import collect_samples, fit_forest
+from .schema import load_class_schema
 
 
 def block_ids(x: np.ndarray, y: np.ndarray, block_m: float) -> np.ndarray:
@@ -44,7 +45,8 @@ def bootstrap_interval(correct: np.ndarray, total: np.ndarray, *, seed: int = 42
 
 def cross_validate(scenes: list[LabeledScene], output: Path, *, by: str = "auto", folds: int = 5,
                    block_m: float = 250.0, buffer_m: float = 30.0, seed: int = 42,
-                   per_class_limit: int = 20000, tile: int = 512, trees: int = 80) -> dict:
+                   per_class_limit: int = 20000, tile: int = 512, trees: int = 80,
+                   class_schema: str = "v1") -> dict:
     """Train on some areas, score on the held-out areas, and write a JSON report."""
     if output.exists():
         raise LandFuseError("Refusing to overwrite an existing cross-validation report")
@@ -55,7 +57,10 @@ def cross_validate(scenes: list[LabeledScene], output: Path, *, by: str = "auto"
     if block_m <= 0 or buffer_m < 0 or buffer_m > block_m:
         raise LandFuseError("block_m must be positive and buffer_m must be between 0 and block_m")
 
-    samples = collect_samples(scenes, seed=seed, per_class_limit=per_class_limit, tile=tile)
+    taxonomy = load_class_schema(class_schema)
+    schema_id, classes = taxonomy.identifier, taxonomy.classes
+    samples = collect_samples(scenes, seed=seed, per_class_limit=per_class_limit, tile=tile,
+                              class_schema=class_schema)
     groups = np.array([item.group for item in scenes])[samples.scene_index]
     distinct_groups = sorted(set(groups.tolist()))
     method = by if by != "auto" else ("group" if len(distinct_groups) >= 2 else "block")
@@ -79,7 +84,7 @@ def cross_validate(scenes: list[LabeledScene], output: Path, *, by: str = "auto"
             raise LandFuseError("Labeled pixels fall in one block; use a smaller block size or more scenes")
         fold_of_unit = rng.permutation(len(blocks)) % min(folds, len(blocks))
 
-    predicted = np.zeros(samples.labels.shape, dtype="uint8")
+    predicted = np.zeros(samples.labels.shape, dtype="uint16" if max(classes)>255 else "uint8")
     fold_records = []
     excluded = 0
     for fold in range(int(fold_of_unit.max()) + 1):
@@ -102,10 +107,10 @@ def cross_validate(scenes: list[LabeledScene], output: Path, *, by: str = "auto"
             fold_records.append(record)
             continue
         forest = fit_forest(samples.features[train], samples.labels[train], seed=seed, trees=trees)
-        predicted[test] = forest.predict(samples.features[test]).astype("uint8")
+        predicted[test] = forest.predict(samples.features[test]).astype(predicted.dtype)
         record["accuracy"] = float(np.mean(predicted[test] == samples.labels[test]))
         record["classes_missing_from_training"] = [
-            CLASSES[int(code)] for code in np.setdiff1d(samples.labels[test], train_classes)
+            classes[int(code)] for code in np.setdiff1d(samples.labels[test], train_classes)
         ]
         fold_records.append(record)
 
@@ -120,7 +125,9 @@ def cross_validate(scenes: list[LabeledScene], output: Path, *, by: str = "auto"
     accuracies = [record["accuracy"] for record in fold_records if "accuracy" in record]
     report = {
         "schema": "landfuse.crossval.v1",
-        "classifier_schema": SCHEMA,
+        "classifier_schema": schema_id,
+        "classifier_schema_sha256": taxonomy.digest,
+        "classifier_schema_document": taxonomy.document,
         "holdout_method": method,
         "terrain_mode": scenes[0].scene.terrain_mode,
         "imagery_bands": int(samples.alignment[0]["imagery_bands"]),
@@ -145,7 +152,7 @@ def cross_validate(scenes: list[LabeledScene], output: Path, *, by: str = "auto"
         "folds": fold_records,
         "warning": "Sample-based estimate from labeled pixels, not a map-wide area-weighted accuracy",
     }
-    report.update(class_metrics(truth, guess))
+    report.update(class_metrics(truth, guess, classes=classes))
     output.parent.mkdir(parents=True, exist_ok=True)
     write_json(output, report)
     return report

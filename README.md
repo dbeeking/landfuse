@@ -1,5 +1,7 @@
 # LandFuse
 
+**LandFuse v0.3.0:** User-configurable JSON/YAML classification schemas are supported; see [schema-driven classification](docs/SCHEMA_DRIVEN_V03.md). Existing six-class `v1` remains the default.
+
 LandFuse classifies land cover from high-resolution aerial imagery alone (NAIP-only mode), or combines four-band aerial imagery with either a bare-earth DEM or a LiDAR-derived canopy height model. It writes a georeferenced classified GeoTIFF and a JSON sidecar with input hashes and coverage. It runs as a standalone command-line tool.
 
 
@@ -52,20 +54,20 @@ Inputs must be local georeferenced, north-up, metric CRS GeoTIFFs, not map tile 
 
 ```bash
 landfuse inspect \
-  --imagery /data/naip_yavapai_4band.tif \
+  --imagery /data/naip_4band.tif \
   --terrain /data/3dep_dem_clip.tif --terrain-mode dem
 
 # Label pixels 1 to 6 by class. Use 0 for unlabeled pixels.
 landfuse train \
-  --imagery /data/naip_yavapai_4band.tif \
+  --imagery /data/naip_4band.tif \
   --terrain /data/3dep_dem_clip.tif --terrain-mode dem \
   --labels /data/validated_training_labels.tif \
-  --output-model /data/models/yavapai_dem_rf.joblib
+  --output-model /data/models/dem_rf.joblib
 
 landfuse classify \
-  --imagery /data/naip_yavapai_4band.tif \
+  --imagery /data/naip_4band.tif \
   --terrain /data/3dep_dem_clip.tif --terrain-mode dem \
-  --model /data/models/yavapai_dem_rf.joblib \
+  --model /data/models/dem_rf.joblib \
   --trust-local-model --output /data/results/landcover_dem.tif
 ```
 
@@ -73,32 +75,32 @@ The `classify` sidecar reports total, classified, and nodata pixels, the coverag
 
 ### Several scenes
 
-A single scene can't represent a county, so list several in a JSON file. Relative paths are resolved from the file's folder. Scenes that share a `group` are held out together during validation. If `group` is omitted, each scene is its own group.
+A single scene rarely captures an entire study area, so list several in a JSON file. Relative paths are resolved from the file's folder. Scenes that share a `group` are held out together during validation. If `group` is omitted, each scene is its own group.
 
 ```json
 {
   "terrain_mode": "dem",
   "scenes": [
     {
-      "id": "prescott",
-      "group": "central_highlands",
-      "imagery": "prescott_naip.tif",
-      "terrain": "prescott_dem.tif",
-      "labels": "prescott_labels.tif"
+      "id": "scene_a",
+      "group": "area_a",
+      "imagery": "scene_a_naip.tif",
+      "terrain": "scene_a_dem.tif",
+      "labels": "scene_a_labels.tif"
     },
     {
-      "id": "congress",
-      "group": "desert",
-      "imagery": "congress_naip.tif",
-      "terrain": "congress_dem.tif",
-      "labels": "congress_labels.tif"
+      "id": "scene_b",
+      "group": "area_b",
+      "imagery": "scene_b_naip.tif",
+      "terrain": "scene_b_dem.tif",
+      "labels": "scene_b_labels.tif"
     }
   ]
 }
 ```
 
 ```bash
-landfuse train --scenes /data/scenes.json --output-model /data/models/yavapai_dem_rf.joblib
+landfuse train --scenes /data/scenes.json --output-model /data/models/dem_rf.joblib
 ```
 
 ### NAIP and LiDAR
@@ -107,20 +109,20 @@ landfuse train --scenes /data/scenes.json --output-model /data/models/yavapai_de
 # Requires PDAL. The LiDAR needs a valid CRS and classified ground returns
 # (ASPRS class 2), and it must cover the imagery extent.
 landfuse prepare-lidar \
-  --lidar /data/yavapai_ground_classified.laz \
-  --imagery /data/naip_yavapai_4band.tif \
+  --lidar /data/ground_classified.laz \
+  --imagery /data/naip_4band.tif \
   --output /data/height_chm.tif --resolution 1.0
 
 # DEM and CHM modes need separate models. Rasterize the training labels
 # to the NAIP grid first.
-landfuse train --imagery /data/naip_yavapai_4band.tif \
+landfuse train --imagery /data/naip_4band.tif \
   --terrain /data/height_chm.tif --terrain-mode chm \
   --labels /data/validated_training_labels.tif \
-  --output-model /data/models/yavapai_lidar_rf.joblib
+  --output-model /data/models/lidar_rf.joblib
 
-landfuse classify --imagery /data/naip_yavapai_4band.tif \
+landfuse classify --imagery /data/naip_4band.tif \
   --terrain /data/height_chm.tif --terrain-mode chm \
-  --model /data/models/yavapai_lidar_rf.joblib \
+  --model /data/models/lidar_rf.joblib \
   --trust-local-model --output /data/results/landcover_lidar.tif
 ```
 
@@ -133,7 +135,7 @@ Use a bbox in a projected CRS with metre units.
 ```bash
 landfuse fetch-naip \
   --bbox XMIN YMIN XMAX YMAX --epsg 26912 \
-  --output /data/naip_yavapai_4band.tif
+  --output /data/naip_4band.tif
 ```
 
 `fetch-naip` requests four-band TIFFs from the 2023 ImageServer and mosaics them into a local GeoTIFF. It stops if the service returns a three-band image, a JSON error, or a response without georeferencing. The default download limit is 5 million pixels, and each scene is limited to 20 million pixels. The provider can throttle or change its service.
