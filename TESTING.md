@@ -1,6 +1,6 @@
 # LandFuse v0.3.0 schema-driven test evidence
 
-This is a local development candidate, not a verified PlaceRules model.
+These tests verify library behavior; they do not establish real-world classification accuracy.
 
 Run `python -m pip install -e '.[test]'` followed by `pytest -q`.
 

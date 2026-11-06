@@ -1,5 +1,5 @@
 format: landfuse.taxonomy.v1
-id: placerules.landcover
+id: example.landcover
 version: 1.0.0
 description: Visible surface cover only; drainage hazard is a separate analytic layer.
 classes:

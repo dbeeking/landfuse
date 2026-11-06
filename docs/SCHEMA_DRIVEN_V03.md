@@ -5,7 +5,7 @@ LandFuse can train, predict, cross-validate and evaluate with a user-selected
 The default **remains** the six-class `v1` schema for existing users.
 `v2` (the seven-class dryland taxonomy) and custom files are opt-in.
 
-Example (see `examples/placerules_landcover.yaml` and `examples/forestry_taxonomy.json`):
+Example (see `examples/landcover_example.yaml` and `examples/forestry_taxonomy.json`):
 
 ```yaml
 id: sample.landcover
@@ -30,15 +30,15 @@ classes:
   imagery. Collect and independently verify training labels for each class.
 
 ```bash
-landfuse schema --class-schema examples/placerules_landcover.yaml
+landfuse schema --class-schema examples/landcover_example.yaml
 landfuse train --imagery /data/naip.tif --labels /data/labels.tif \
-  --class-schema examples/placerules_landcover.yaml \
+  --class-schema examples/landcover_example.yaml \
   --output-model /data/model.joblib
 landfuse classify --imagery /data/naip.tif --model /data/model.joblib \
   --trust-local-model --output /data/landcover.tif
 landfuse evaluate --prediction /data/landcover.tif \
   --reference /data/independent_holdout.tif \
-  --class-schema examples/placerules_landcover.yaml \
+  --class-schema examples/landcover_example.yaml \
   --output /data/evaluation.json
 ```
 
@@ -47,10 +47,7 @@ landfuse evaluate --prediction /data/landcover.tif \
 Existing legacy v1/v2 models can still be read when their model hashes,
 feature contracts and class mappings match.
 
-**Migration caution:** Pixel code meanings can differ between schemas.
-Do not treat the 272 Yavapai labels or old prediction rasters as seven-class
-labels automatically. PlaceRules R17D4 still requires a schema-aware backend
-and report legend before any non-v1 model is used for paid output.
+**Migration caution:** Pixel code meanings may differ between taxonomies. Existing labels and predictions must not be silently reinterpreted under a new schema. Downstream consumers must support the schema-aware class mappings before using new model outputs.
 
 **Reliability:** This is a library implementation, not a pretrained model,
 real-world classification validation, or approval for site-safety decisions.
